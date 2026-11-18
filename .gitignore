@@ -46,3 +46,11 @@ build_release.log
 docs/
 
 app/src/main/jniLibs/arm64-v8a/libtimer.so
+
+# 固件转储与内核分析产物（体积大，不入库）
+artifacts/
+mustang-*.zip
+KernelSU_Next_*.apk
+
+# 工具配置
+.commandcode/

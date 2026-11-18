@@ -3,16 +3,16 @@
     <!-- Header -->
     <string name="app_name">Pixel Timer</string>
     <string name="app_title">Pixel Timer</string>
-    <string name="app_subtitle">CVE-2026-98260 · Pixel 8 Pro</string>
-    <string name="tested_profile">Only tested on Pixel 8 Pro · CP3A.261005.005</string>
-    <string name="unsupported_profile">Unsupported device or kernel. This build requires the tested Pixel 8 Pro kernel.</string>
+    <string name="app_subtitle">CVE-2026-98260 · Pixel 10 Pro XL</string>
+    <string name="tested_profile">Only tested on Pixel 10 Pro XL · CP3A.261005.005</string>
+    <string name="unsupported_profile">Unsupported device or kernel. This build requires the tested Pixel 10 Pro XL kernel.</string>
 
     <!-- Root status -->
     <string name="root_checking">Checking…</string>
     <string name="root_rooted">Rooted</string>
     <string name="root_not_rooted">Not rooted</string>
     <string name="root_unknown">Cannot check</string>
-    <string name="root_rooted_detail">KernelSU Next module live — grant su in the manager app</string>
+    <string name="root_rooted_detail">KernelSU Next module is live</string>
     <string name="root_not_detail">Root is cleared on reboot</string>
     <string name="root_unknown_detail">No permission — checked automatically once Shizuku connects</string>
 
@@ -25,6 +25,7 @@
     <!-- Run button -->
     <string name="run_root">Root now</string>
     <string name="run_reroot">Re-root</string>
+    <string name="run_reboot">Reboot required</string>
     <string name="run_running">Running… (up to 8 min)</string>
 
     <!-- Status line -->
@@ -41,7 +42,7 @@
 
     <!-- Auto-root -->
     <string name="auto_title">Auto-root after reboot</string>
-    <string name="auto_desc">Waits for Shizuku on boot, then runs automatically · disables itself on failure</string>
+    <string name="auto_desc">Waits for Shizuku on boot, then runs automatically. Disables itself on failure.</string>
 
     <!-- Log -->
     <string name="log_label">LOG</string>
@@ -58,7 +59,7 @@
     <!-- Dialogs -->
     <string name="dialog_run_title">Start rooting</string>
     <string name="dialog_rerun_title">Re-root</string>
-    <string name="dialog_run_msg">Run the Pixel 8 Pro CVE-2026-98260 timer exploit and load KernelSU Next.\n\nTested only on Pixel 8 Pro with kernel 6.1.162-android14-11-g9dd05ae3a1de-ab16261587. A failed run may require a reboot.\n\nContinue?</string>
+    <string name="dialog_run_msg">Run the Pixel 10 Pro XL CVE-2026-98260 timer exploit and load KernelSU Next.\n\nTested only on Pixel 10 Pro XL with kernel 6.6.127-android15-8-g91d825611104-ab16252310-4k. A failed run may require a reboot.\n\nContinue?</string>
     <string name="dialog_rerun_msg">The device is already rooted.\nRun the exploit again?\n\n(The load step is skipped when the module is already live.)</string>
     <string name="dialog_confirm_run">Run</string>
     <string name="dialog_cancel">Cancel</string>

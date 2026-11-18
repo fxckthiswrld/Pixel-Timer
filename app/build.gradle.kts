@@ -5,7 +5,7 @@ plugins {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Pixel 8 Pro payload build: timer.c + offsets.h + pixel_main.inc → libtimer.so
+// Pixel 10 Pro XL payload build: timer.c + offsets.h + pixel_main.inc → libtimer.so
 //
 // The CVE-2026-98260 binary ships inside the APK and is executed straight
 // from nativeLibraryDir (useLegacyPackaging keeps it uncompressed).  Building
@@ -64,6 +64,7 @@ val buildPayload by tasks.registering(Exec::class) {
             "-O2", "-std=gnu11", "-static",
             "-Wall", "-Wextra", "-Wno-unused-parameter",
             "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
+            "-Wl,-z,max-page-size=16384", "-Wl,-z,common-page-size=16384",
             src.absolutePath, "-o", out.absolutePath
         )
         if (windows)
@@ -75,7 +76,7 @@ val buildPayload by tasks.registering(Exec::class) {
 
 android {
     namespace = "com.roottimer.app"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.pixeltimer.app"

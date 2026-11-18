@@ -3,16 +3,16 @@
     <!-- Header -->
     <string name="app_name">Pixel Timer</string>
     <string name="app_title">Pixel Timer</string>
-    <string name="app_subtitle">CVE-2026-98260 · Pixel 8 Pro</string>
-    <string name="tested_profile">Pixel 8 Pro · CP3A.261005.005에서만 테스트됨</string>
-    <string name="unsupported_profile">지원되지 않는 기기 또는 커널입니다. 테스트된 Pixel 8 Pro 커널이 필요합니다.</string>
+    <string name="app_subtitle">CVE-2026-98260 · Pixel 10 Pro XL</string>
+    <string name="tested_profile">Pixel 10 Pro XL · CP3A.261005.005에서만 테스트됨</string>
+    <string name="unsupported_profile">지원되지 않는 기기 또는 커널입니다. 테스트된 Pixel 10 Pro XL 커널이 필요합니다.</string>
 
     <!-- Root status -->
     <string name="root_checking">확인 중…</string>
     <string name="root_rooted">루팅 됨</string>
     <string name="root_not_rooted">루팅 안 됨</string>
     <string name="root_unknown">확인 불가</string>
-    <string name="root_rooted_detail">KernelSU Next 모듈 로드됨 · 매니저에서 su 승인 후 사용</string>
+    <string name="root_rooted_detail">KernelSU Next 모듈이 로드됨</string>
     <string name="root_not_detail">재부팅하면 루팅은 해제됩니다</string>
     <string name="root_unknown_detail">권한 없음 — Shizuku 연결 후 자동 확인됩니다</string>
 
@@ -25,6 +25,7 @@
     <!-- Run button -->
     <string name="run_root">루트 실행</string>
     <string name="run_reroot">재루팅</string>
+    <string name="run_reboot">재부팅 필요</string>
     <string name="run_running">실행 중… (최대 8분)</string>
 
     <!-- Status line -->
@@ -58,7 +59,7 @@
     <!-- Dialogs -->
     <string name="dialog_run_title">루팅 시작</string>
     <string name="dialog_rerun_title">재루팅</string>
-    <string name="dialog_run_msg">Pixel 8 Pro용 CVE-2026-98260 타이머 익스플로잇을 실행하고 KernelSU Next를 로드합니다.\n\n커널 6.1.162-android14-11-g9dd05ae3a1de-ab16261587의 Pixel 8 Pro에서만 테스트되었습니다. 실패하면 재부팅이 필요할 수 있습니다.\n\n계속할까요?</string>
+    <string name="dialog_run_msg">Pixel 10 Pro XL용 CVE-2026-98260 타이머 익스플로잇을 실행하고 KernelSU Next를 로드합니다.\n\n커널 6.6.127-android15-8-g91d825611104-ab16252310-4k의 Pixel 10 Pro XL에서만 테스트되었습니다. 실패하면 재부팅이 필요할 수 있습니다.\n\n계속할까요?</string>
     <string name="dialog_rerun_msg">이미 루팅되어 있습니다.\n다시 익스플로잇을 실행할까요?\n\n(모듈이 이미 로드되어 있으면 로드 단계는 건너뜁니다)</string>
     <string name="dialog_confirm_run">실행</string>
     <string name="dialog_cancel">취소</string>

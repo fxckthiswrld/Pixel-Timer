@@ -62,10 +62,14 @@ class ShizukuWaitWorker(ctx: Context, params: WorkerParameters) :
     override fun doWork(): Result {
         if (!DeviceProfile.isSupported()) return Result.failure()
         if (modulesHasKsu()) return Result.success() // already rooted, next worker no-ops
-        val deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(8)
+        // Shizuku is started by its own boot receiver over wireless debugging
+        // and can take several minutes (or wait for the user to unlock/start
+        // it).  Keep the window wide; a deadline miss leaves the toggle on so
+        // the next boot tries again.
+        val deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(15)
         while (System.currentTimeMillis() < deadline) {
             if (Shizuku.pingBinder()) return Result.success()
-            Thread.sleep(10_000)
+            Thread.sleep(5_000)
         }
         AutoRootNotif.post(
             applicationContext, 1,

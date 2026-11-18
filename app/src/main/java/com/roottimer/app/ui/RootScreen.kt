@@ -6,12 +6,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -84,15 +87,19 @@ fun RootScreen(
     statusColor: Color,
     runLabel: String,
     runEnabled: Boolean,
+    needsReboot: Boolean,
     isRunning: Boolean,
     autoRoot: Boolean,
     logs: List<String>,
     onRun: () -> Unit,
     onAutoToggle: (Boolean) -> Unit,
-    onOpenManager: () -> Unit,
 ) {
     Surface(color = Bg, modifier = Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+        ) {
             // ── Header ────────────────────────────────────────────────
             Column(
                 Modifier
@@ -126,24 +133,6 @@ fun RootScreen(
                         )
                     }
                 }
-                Text(
-                    stringResource(R.string.app_subtitle),
-                    Modifier.padding(top = 2.dp),
-                    fontSize = 13.sp,
-                    color = TextSecondary
-                )
-                Text(
-                    stringResource(R.string.tested_profile),
-                    Modifier.padding(top = 2.dp),
-                    fontSize = 12.sp,
-                    color = Warn
-                )
-                Text(
-                    stringResource(R.string.credits),
-                    Modifier.padding(top = 2.dp),
-                    fontSize = 11.sp,
-                    color = Accent
-                )
             }
 
             // ── Status card ──────────────────────────────────────────
@@ -181,15 +170,6 @@ fun RootScreen(
                     HorizontalDivider(color = Color(0xFF232A34))
                     Spacer(Modifier.height(12.dp))
                     StatusRow("Shizuku", shizukuLabel, shizukuDot)
-                    Spacer(Modifier.height(6.dp))
-                    TextButton(onClick = onOpenManager) {
-                        Text(
-                            stringResource(R.string.manager_button),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Accent
-                        )
-                    }
                 }
             }
 
@@ -198,7 +178,7 @@ fun RootScreen(
             // ── Run button ───────────────────────────────────────────
             Button(
                 onClick = onRun,
-                enabled = runEnabled,
+                enabled = runEnabled && !needsReboot,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
@@ -226,7 +206,11 @@ fun RootScreen(
                         modifier = Modifier.size(22.dp)
                     )
                     Spacer(Modifier.width(10.dp))
-                    Text(runLabel, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (needsReboot) stringResource(R.string.run_reboot) else runLabel,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
 

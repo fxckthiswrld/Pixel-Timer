@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
  *
  *   ShizukuWaitWorker  - waits for Shizuku's binder (it starts on its own
  *                        boot receiver when the user set wireless debugging
- *                        to auto-start), up to 8 minutes.
+ *                        to auto-start), up to 15 minutes.
  *   AutoRootWorker     - binds the UserService and runs the exploit, with a
  *                        notification at each phase.  A failed run disables
  *                        the toggle so a bad build cannot boot-loop the
@@ -24,6 +24,8 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         val prefs = context.getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+        // A reboot is what clears a parked stale-timer holder.
+        prefs.edit().putBoolean(Prefs.PARKED, false).remove(Prefs.PARKED_BOOT).apply()
         if (!prefs.getBoolean(Prefs.AUTO_ROOT, false)) return
         if (!DeviceProfile.isSupported()) {
             prefs.edit().putBoolean(Prefs.AUTO_ROOT, false).apply()

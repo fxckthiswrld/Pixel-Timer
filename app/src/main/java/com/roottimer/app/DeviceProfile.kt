@@ -6,8 +6,8 @@ import android.system.OsConstants
 
 /** Exact profile used to derive the native payload's kernel offsets. */
 object DeviceProfile {
-    const val DEVICE = "husky"
-    const val KERNEL = "6.1.162-android14-11-g9dd05ae3a1de-ab16261587"
+    const val DEVICE = "mustang"
+    const val KERNEL = "6.6.127-android15-8-g91d825611104-ab16252310-4k"
     const val PAGE_SIZE = 4096L
 
     fun isSupported(): Boolean = try {

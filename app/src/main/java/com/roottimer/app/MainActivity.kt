@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
     private var runLabel by mutableStateOf("")
     private var runEnabled by mutableStateOf(false)
     private var isRunning by mutableStateOf(false)
+    private var needsReboot by mutableStateOf(false)
     private var statusText by mutableStateOf("")
     private var statusColor by mutableStateOf(Color(0xFF8B98A5))
     private var autoRoot by mutableStateOf(false)
@@ -137,6 +138,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         autoRoot = getSharedPreferences(Prefs.NAME, MODE_PRIVATE)
             .getBoolean(Prefs.AUTO_ROOT, false)
+        needsReboot = getSharedPreferences(Prefs.NAME, MODE_PRIVATE)
+            .getBoolean(Prefs.PARKED, false)
         if (!DeviceProfile.isSupported() && autoRoot) {
             autoRoot = false
             getSharedPreferences(Prefs.NAME, MODE_PRIVATE)
@@ -176,6 +179,7 @@ class MainActivity : ComponentActivity() {
                     statusColor = statusColor,
                     runLabel = runLabel,
                     runEnabled = runEnabled,
+                    needsReboot = needsReboot,
                     isRunning = isRunning,
                     autoRoot = autoRoot,
                     logs = logs,
@@ -189,7 +193,6 @@ class MainActivity : ComponentActivity() {
                             appendLog(getString(R.string.log_auto_off))
                         }
                     },
-                    onOpenManager = { openManager() },
                 )
 
                 if (showRunConfirm) {
@@ -380,10 +383,17 @@ class MainActivity : ComponentActivity() {
         Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
 
     private fun launch(service: IRootService) {
-        setStatus(getString(R.string.status_running), Warn)
         val cb = object : IRootCallback.Stub() {
             override fun onLog(line: String) {
-                main.post { appendLog(line) }
+                main.post {
+                    appendLog(line)
+                    // The UserService runs in its own process, so its
+                    // SharedPreferences flag is not reliable here; the park
+                    // marker arrives over Binder instead.
+                    if (line.contains("PARKED: reboot the phone")) {
+                        needsReboot = true
+                    }
+                }
             }
 
             override fun onComplete(exitCode: Int, ksuLoaded: Boolean) {
@@ -399,10 +409,13 @@ class MainActivity : ComponentActivity() {
                     } else {
                         appendLog(getString(R.string.log_failed))
                         setStatus(getString(R.string.status_failed_fmt, exitCode), Danger)
+                        if (exitCode == 6) needsReboot = true
                     }
                     running.set(false)
                     isRunning = false
                     runEnabled = true
+                    needsReboot = getSharedPreferences(Prefs.NAME, MODE_PRIVATE)
+                        .getBoolean(Prefs.PARKED, false)
                     updateRootBadge()
                     // Keep the UserService bound: the badge poller uses it to
                     // read /proc/modules (the app uid cannot).  Unbound in
